@@ -1,0 +1,211 @@
+##############################################
+#
+# General description:
+#
+#   The following function reads in bed files of ATAC and RNA-seq data and
+#   compares coverage.
+
+# Input:
+#
+#     ATAC_bedfile: path to bed file with ATAC-seq data
+#     RNAseq_bedfile: path to bed file with RNA-seq data
+
+# Output:
+#   
+#    : ...
+
+# Comments:
+#   
+#    Requires packages csaw
+
+##############################################
+
+#######################################
+#                                     #
+#    Read in data and                 #
+#   determine coverage                #
+#                                     #
+#######################################
+
+# Load packages
+library(GenomicRanges)
+#library(ShortRead)
+library(csaw)
+library(data.table)
+
+# Determine paths
+ATAC_bedfile   <- '/srv/gsfs0/projects/levinson/hzudohna/ATACseq/iN_deletion_3_Aligned.out.sorted.bed'
+RNAseq_bedfile <- '/srv/gsfs0/projects/levinson/hzudohna/ATACseq/no_dups_iN-1133-ATAC_S7_merged.sort.bed'
+
+# Create
+
+# Read 
+# ReadsATAC   <- import.bed(con = ATAC_bedfile)
+# ReadsATAC   <- fread(ATAC_bedfile, data.table=FALSE, header=FALSE, select=c(1,2,3,6))
+# ReadsATAC   <- fread(ATAC_bedfile, data.table=FALSE, header=FALSE)
+# ReadsRNAseq <- import.bed(con = RNAseq_bedfile)
+
+# Loop through lines and save reads to fasta files for read 1 and 2
+LinesPerScan  <- 10^6
+
+#  Scan reads from ATAC-seq 
+TotalReads <- 0
+i <- 1
+GR_ATAC <- c()
+ScannedLines <- rep(1, LinesPerScan)
+while (length(ScannedLines)  == LinesPerScan){
+    ScannedLines <- scan(ATAC_bedfile, skip = (i - 1) * LinesPerScan , 
+                         nlines = LinesPerScan, 
+                         what = 'character', sep = '\n')
+    i <- i + 1
+    BedTable <- read.delim(text = ScannedLines, 
+       col.names = c("Chrom", "Start", "End", "Name", "Nr", "Strand"))
+    GR_ATAC <- c(GR_ATAC,
+                 GRanges(seqnames = BedTable$Chrom, 
+            ranges = IRanges(start = BedTable$Start, end = BedTable$End),
+            strand = BedTableATAC$Strand))
+    TotalReads <- TotalReads + length(ScannedLines)
+    cat("ATAC-seq: total of", TotalReads, "reads processed\n")
+  }
+GR_ATAC <- unlist(GRangesList(GR_ATAC))
+
+#  Scan reads from RNA-seq 
+TotalReads <- 0
+i <- 1
+GR_RNAseq <- c()
+ScannedLines <- rep(1, LinesPerScan)
+while (length(ScannedLines)  == LinesPerScan){
+  ScannedLines <- scan(RNAseq_bedfile, skip = (i - 1) * LinesPerScan , 
+                       nlines = LinesPerScan, 
+                       what = 'character', sep = '\n')
+  i <- i + 1
+  BedTable <- read.delim(text = ScannedLines, 
+                         col.names = c("Chrom", "Start", "End", "Name", "Nr", "Strand"))
+  GR_RNAseq <- c(GR_RNAseq,
+               GRanges(seqnames = BedTable$Chrom, 
+                       ranges = IRanges(start = BedTable$Start, end = BedTable$End),
+                       strand = BedTableATAC$Strand))
+  TotalReads <- TotalReads + length(ScannedLines)
+  cat("RNA-seq: total of", TotalReads, "reads processed\n")
+}
+GR_RNAseq <- unlist(GRangesList(GR_RNAseq))
+
+cov <- coverage(reads)
+
+# for a peak on chr1 from 2000:3000
+plot(cov[["chr1"]][1000:4000])
+
+#######                       
+# Calculate coverage                    
+#######                                     
+
+# Determine coverage
+CovATAC   <- coverage(ReadsATAC)
+CovRNAseq <- coverage(ReadsRNAseq)
+
+# Determine separate islands with continuous read coverage and turn islands 
+# into genomic ranges
+IslATAC   <- slice(CovATAC)
+IslRNAseq <- slice(CovRNAseq)
+
+#######################################
+#                                     #
+#    Determine 'islands' with         #
+#        nonzero coverage             #
+#                                     #
+#######################################
+
+   # Determine separate islands with continuous read coverage and turn islands 
+   # into genomic ranges
+   IslandList <- lapply(CoverList, function(x){
+     Islands <- slice(x, lower = 1)
+   })
+   Chroms <- names(ChromLengths)
+   IslandGRanges <- lapply(1:length(IslandList), function(i){
+   GRanges(seqnames = Chroms[i], 
+          ranges = IslandList[[i]]@listData[[1]]@ranges,
+          coverTotal = viewSums(IslandList[[i]])[[1]],
+          coverMax   = viewMaxs(IslandList[[i]])[[1]],
+          coverMaxPos   = viewWhichMaxs(IslandList[[i]])[[1]])
+   })
+   IslandGRanges <- GRangesList(IslandGRanges)
+   IslandGRanges <- unlist(IslandGRanges)
+   cat(length(IslandGRanges), "distinct peaks\n\n")
+
+   # Merge ranges that are less than MinGap bp apart
+   IslGRanges_reduced <- reduce(IslandGRanges, min.gapwidth = MinGap,
+                             with.revmap = T)
+   cat(length(IslGRanges_reduced), "distinct peaks after merging peaks that")
+   cat("are less than", MinGap, "apart\n\n")
+
+   #######################################
+   #                                     #
+   #    Find 'islands' not overlapping   #
+   #        with reference L1            #
+   #                                     #
+   #######################################
+   
+   cat("***** Finding 'islands' not overlapping with reference L1 ... *****\n")
+
+   # Find overlaps between islands and L1HS ranges
+   blnOverlapIslands_All <- overlapsAny(IslGRanges_reduced, L1GRanges)
+
+   # Get maximum cover and position of maximum cover in reduced ranges
+   maxCoverOriginal    <- IslandGRanges@elementMetadata@listData$coverMax
+   maxCoverPosOriginal <- IslandGRanges@elementMetadata@listData$coverMaxPos
+   maxCover <- sapply(IslGRanges_reduced@elementMetadata@listData$revmap, 
+                   function(x) max(maxCoverOriginal[x]))
+   maxCoverPos <- sapply(IslGRanges_reduced@elementMetadata@listData$revmap, 
+                      function(x) maxCoverPosOriginal[x[which.max(maxCoverOriginal[x])]])
+   
+   # Get all ranges that make the maximum cover cut-off and don't overlap with
+   # reference L1
+   idxSuspectL1Ranges <- which(maxCover > MinMaxCover & (!blnOverlapIslands_All))
+   SuspectL1Ranges    <- IslGRanges_reduced[idxSuspectL1Ranges]
+   cat(length(idxSuspectL1Ranges), "peaks have maximum coverage of at least",
+      MinMaxCover, "and do not overlap with reference L1\n")
+
+   # Remove ranges of suspected L1s that are too close to reference L1
+   DistToNearestL1    <- nearest(SuspectL1Ranges, L1GRanges)
+   idxSuspectL1Ranges <- idxSuspectL1Ranges[DistToNearestL1 >= MinDist2L1]
+   SuspectL1Ranges    <- IslGRanges_reduced[idxSuspectL1Ranges]
+   maxCoverPos_SuspL1Ranges <- maxCoverPos[idxSuspectL1Ranges]
+   cat(length(idxSuspectL1Ranges), "of the above peaks are at least", 
+       MinDist2L1, "bp from nearest reference L1\n\n")
+   
+   #######################################
+   #                                     #
+   #    Find 'islands' overlapping       #
+   #    with full-length reference L1    #
+   #                                     #
+   #######################################
+   
+   cat("***** Filtering reads overlapping with full-length reference L1 ... *****\n")
+
+   # Find overlaps between islands and full-length L1HS ranges
+   blnOverlapIslands_L1HS <- overlapsAny(IslGRanges_reduced, 
+                                         L1HSFullLength_GRanges)
+   
+   # Get genomoc ranges of islands overlapping with full-length L1HS
+   idxFullRefL1Ranges <- which(blnOverlapIslands_L1HS)
+   FullRefL1Ranges    <- IslGRanges_reduced[blnOverlapIslands_L1HS]
+   
+   # Filter bam file to get reads in islands overlapping with full-length L1
+   param <- ScanBamParam(which = FullRefL1Ranges, what = scanBamWhat())
+   filterBam(file = BamFile, destination = OutBamFileFullLengthL1, param = param)
+   
+   #######################################################
+   #                                                     #
+   #    Save results                                     #
+   #                                                     #
+   #######################################################
+
+   # Save results
+   cat("*******  Saving results for ComparePeaksWithRefL1...   *******\n")
+   save(list = c("IslGRanges_reduced", "maxCover", "maxCoverPos", 
+              "idxSuspectL1Ranges", "SuspectL1Ranges", 
+              "FullRefL1Ranges", "idxFullRefL1Ranges"), 
+     file = OutFile)
+
+
+
