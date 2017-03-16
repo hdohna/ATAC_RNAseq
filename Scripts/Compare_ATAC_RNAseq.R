@@ -29,84 +29,99 @@
 
 # Load packages
 library(GenomicRanges)
-#library(ShortRead)
+library(ShortRead)
 library(csaw)
+library(Rsamtools)
+library(rtracklayer)
 library(data.table)
 
 # Determine paths
 ATAC_bedfile   <- '/srv/gsfs0/projects/levinson/hzudohna/ATACseq/iN_deletion_3_Aligned.out.sorted.bed'
 RNAseq_bedfile <- '/srv/gsfs0/projects/levinson/hzudohna/ATACseq/no_dups_iN-1133-ATAC_S7_merged.sort.bed'
+RNAseq_bamfile <- '/srv/gsfs0/projects/levinson/CP/data_for_Heinrich/iN_deletion_3_Aligned.out.sorted.bam'
+ATACpeaks <- import.bed('/srv/gsfs0/projects/levinson/hzudohna/ATACseq/NA_summits.bed')
+ATACpeaks <- ATACpeaks[seqnames(ATACpeaks) != "chrM"]
+RNAseqReadList <-lapply(1:length(ATACpeaks), function(i){
+  extractReads(RNAseq_bamfile, ATACpeaks[i])
+})
+RNAseqReadList <-lapply(1:10, function(i){
+  extractReads(RNAseq_bamfile, ATACpeaks[i])
+})
 
-# Create
-
-# Read 
-# ReadsATAC   <- import.bed(con = ATAC_bedfile)
-# ReadsATAC   <- fread(ATAC_bedfile, data.table=FALSE, header=FALSE, select=c(1,2,3,6))
-# ReadsATAC   <- fread(ATAC_bedfile, data.table=FALSE, header=FALSE)
-# ReadsRNAseq <- import.bed(con = RNAseq_bedfile)
+unique(seqnames(ATACpeaks))
 
 # Loop through lines and save reads to fasta files for read 1 and 2
-LinesPerScan  <- 10^6
+LinesPerScan  <- 5*10^5
+
+# Create vector of chromosome names
+ChromNames <- paste("chr", c(1:22, "X", "Y"), sep = "")
 
 #  Scan reads from ATAC-seq 
 TotalReads <- 0
 i <- 1
 GR_ATAC <- c()
-ScannedLines <- rep(1, LinesPerScan)
-while (length(ScannedLines)  == LinesPerScan){
-    ScannedLines <- scan(ATAC_bedfile, skip = (i - 1) * LinesPerScan , 
+ScannedLines <- matrix(nrow = LinesPerScan)
+CoverList_ATAC <- lapply(ChromNames, function(x) 0)
+names(CoverList_ATAC) <- ChromNames
+cat("Reading ATAC-seq data piecewise ... \n")
+while (nrow(ScannedLines)  == LinesPerScan){
+  ScannedLines <- scan(ATAC_bedfile, skip = (i - 1) * LinesPerScan , 
                          nlines = LinesPerScan, 
                          what = 'character', sep = '\n')
     i <- i + 1
-    BedTable <- read.delim(text = ScannedLines, 
-       col.names = c("Chrom", "Start", "End", "Name", "Nr", "Strand"))
-    GR_ATAC <- c(GR_ATAC,
-                 GRanges(seqnames = BedTable$Chrom, 
-            ranges = IRanges(start = BedTable$Start, end = BedTable$End),
-            strand = BedTableATAC$Strand))
-    TotalReads <- TotalReads + length(ScannedLines)
+    ScannedLines <- fread(input = paste(ScannedLines, collapse = "\n"), 
+                          header = F,
+      col.names = c("Chrom", "Start", "End", "Name", "Nr", "Strand"))
+    GR <- GRanges(seqnames = ScannedLines$Chrom, 
+            ranges = IRanges(start = ScannedLines$Start, end = ScannedLines$End),
+            strand = ScannedLines$Strand)
+    for (Chr in unique(seqnames(GR))){
+      GRsubset <- GR[seqnames(GR) == Chr]
+      CoverList_ATAC[[Chr]] <- CoverList_ATAC[[Chr]] + coverage(GR)
+    }
+    
+    TotalReads <- TotalReads + nrow(ScannedLines)
     cat("ATAC-seq: total of", TotalReads, "reads processed\n")
   }
-GR_ATAC <- unlist(GRangesList(GR_ATAC))
 
 #  Scan reads from RNA-seq 
 TotalReads <- 0
 i <- 1
 GR_RNAseq <- c()
-ScannedLines <- rep(1, LinesPerScan)
-while (length(ScannedLines)  == LinesPerScan){
+ScannedLines <- matrix(nrow = LinesPerScan)
+CoverList_RNAseq <- lapply(ChromNames, function(x) 0)
+names(CoverList_RNAseq) <- ChromNames
+cat("Reading RNA-seq data piecewise ... \n")
+while (nrow(ScannedLines)  == LinesPerScan){
   ScannedLines <- scan(RNAseq_bedfile, skip = (i - 1) * LinesPerScan , 
                        nlines = LinesPerScan, 
                        what = 'character', sep = '\n')
   i <- i + 1
-  BedTable <- read.delim(text = ScannedLines, 
-                         col.names = c("Chrom", "Start", "End", "Name", "Nr", "Strand"))
-  GR_RNAseq <- c(GR_RNAseq,
-               GRanges(seqnames = BedTable$Chrom, 
-                       ranges = IRanges(start = BedTable$Start, end = BedTable$End),
-                       strand = BedTableATAC$Strand))
-  TotalReads <- TotalReads + length(ScannedLines)
+  ScannedLines <- fread(input = paste(ScannedLines, collapse = "\n"), header = F,
+                        col.names = c("Chrom", "Start", "End", "Name", "Nr", "Strand"))
+  GR <- GRanges(seqnames = ScannedLines$Chrom, 
+                ranges = IRanges(start = ScannedLines$Start, end = ScannedLines$End),
+                strand = ScannedLines$Strand)
+  for (Chr in unique(seqnames(GR))){
+    GRsubset <- GR[seqnames(GR) == Chr]
+    CoverList_RNAseq[[Chr]] <- CoverList_RNAseq[[Chr]] + coverage(GR)
+  }
+  TotalReads <- TotalReads + nrow(ScannedLines)
   cat("RNA-seq: total of", TotalReads, "reads processed\n")
 }
-GR_RNAseq <- unlist(GRangesList(GR_RNAseq))
-
-cov <- coverage(reads)
-
-# for a peak on chr1 from 2000:3000
-plot(cov[["chr1"]][1000:4000])
 
 #######                       
 # Calculate coverage                    
 #######                                     
 
 # Determine coverage
-CovATAC   <- coverage(ReadsATAC)
-CovRNAseq <- coverage(ReadsRNAseq)
+CovATAC   <- coverage(GR_ATAC)
+CovRNAseq <- coverage(GR_RNAseq)
 
 # Determine separate islands with continuous read coverage and turn islands 
 # into genomic ranges
-IslATAC   <- slice(CovATAC)
-IslRNAseq <- slice(CovRNAseq)
+IslATAC   <- slice(CovATAC, lower = 1)
+IslRNAseq <- slice(CovRNAseq, lower = 1)
 
 #######################################
 #                                     #
